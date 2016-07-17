@@ -25,10 +25,19 @@
 // Declare system global variable structure
 system_t sys; 
 
-
+#ifdef WIN32
+int main(int argc, char *argv[])
+#else
 int main(void)
+#endif
 {
   // Initialize system upon power-up.
+#ifdef WIN32
+  winserial_init(argv[1]);
+#ifndef NOEEPROMSUPPORT
+  eeprom_init();
+#endif
+#endif
   serial_init();   // Setup serial baud rate and interrupts
   settings_init(); // Load Grbl settings from EEPROM
   stepper_init();  // Configure stepper pins and interrupt timers
@@ -36,7 +45,9 @@ int main(void)
   
   memset(&sys, 0, sizeof(system_t));  // Clear all system variables
   sys.abort = true;   // Set abort to complete initialization
+#ifdef AVRTARGET
   sei(); // Enable interrupts
+#endif
 
   // Check for power-up and set system alarm if homing is enabled to force homing cycle
   // by setting Grbl's alarm state. Alarm locks out all g-code commands, including the

@@ -54,6 +54,7 @@ void write_global_settings()
   memcpy_to_eeprom_with_checksum(EEPROM_ADDR_GLOBAL, (char*)&settings, sizeof(settings_t));
 }
 
+extern char line[];
 
 // Method to restore EEPROM-saved Grbl global settings back to defaults. 
 void settings_restore(uint8_t restore_flag) {  
@@ -100,22 +101,23 @@ void settings_restore(uint8_t restore_flag) {
   }
   
   if (restore_flag & SETTINGS_RESTORE_PARAMETERS) {
-    uint8_t idx;
-    float coord_data[N_AXIS];
-    memset(&coord_data, 0, sizeof(coord_data));
-    for (idx=0; idx <= SETTING_INDEX_NCOORD; idx++) { settings_write_coord_data(idx, coord_data); }
+	uint8_t idx;
+	float coord_data[N_AXIS];
+	memset(&coord_data, 0, sizeof(coord_data));
+	for (idx=0; idx <= SETTING_INDEX_NCOORD; idx++) { settings_write_coord_data(idx, coord_data); }
   }
   
   if (restore_flag & SETTINGS_RESTORE_STARTUP_LINES) {
-    #if N_STARTUP_LINE > 0
-      eeprom_put_char(EEPROM_ADDR_STARTUP_BLOCK, 0);
-    #endif
-    #if N_STARTUP_LINE > 1
-      eeprom_put_char(EEPROM_ADDR_STARTUP_BLOCK+(EEPROM_LINE_SIZE+1), 0);
-    #endif
+      line[0] = 0;
+	#if N_STARTUP_LINE > 0
+	settings_store_startup_line(0,line);
+	#endif
+	#if N_STARTUP_LINE > 1
+	settings_store_startup_line(1,line);
+	#endif
   }
   
-  if (restore_flag & SETTINGS_RESTORE_BUILD_INFO) { eeprom_put_char(EEPROM_ADDR_BUILD_INFO , 0); }
+  if (restore_flag & SETTINGS_RESTORE_BUILD_INFO) { settings_store_build_info(line); }
 }
 
 
@@ -149,10 +151,14 @@ uint8_t settings_read_build_info(char *line)
 // Read selected coordinate data from EEPROM. Updates pointed coord_data value.
 uint8_t settings_read_coord_data(uint8_t coord_select, float *coord_data)
 {
+  int i;
   uint32_t addr = coord_select*(sizeof(float)*N_AXIS+1) + EEPROM_ADDR_PARAMETERS;
   if (!(memcpy_from_eeprom_with_checksum((char*)coord_data, addr, sizeof(float)*N_AXIS))) {
     // Reset with default zero vector
-    clear_vector_float(coord_data); 
+      for (i = 0; i < N_AXIS; i ++)
+      {
+          coord_data[i] = 0.0;
+      }
     settings_write_coord_data(coord_select,coord_data);
     return(false);
   }
@@ -178,22 +184,26 @@ uint8_t read_global_settings() {
 
 // A helper method to set settings from command line
 uint8_t settings_store_global_setting(uint8_t parameter, float value) {
+    uint8_t set_idx = 0;
   if (value < 0.0) { return(STATUS_NEGATIVE_VALUE); } 
   if (parameter >= AXIS_SETTINGS_START_VAL) {
     // Store axis configuration. Axis numbering sequence set by AXIS_SETTING defines.
     // NOTE: Ensure the setting index corresponds to the report.c settings printout.
     parameter -= AXIS_SETTINGS_START_VAL;
-    uint8_t set_idx = 0;
     while (set_idx < AXIS_N_SETTINGS) {
       if (parameter < N_AXIS) {
         // Valid axis setting found.
         switch (set_idx) {
           case 0:
-            if (value*settings.max_rate[parameter] > (MAX_STEP_RATE_HZ*60.0)) { return(STATUS_MAX_STEP_RATE_EXCEEDED); }
+            #ifdef MAX_STEP_RATE_HZ
+              if (value*settings.max_rate[parameter] > (MAX_STEP_RATE_HZ*60.0)) { return(STATUS_MAX_STEP_RATE_EXCEEDED); }
+            #endif
             settings.steps_per_mm[parameter] = value;
             break;
           case 1:
-            if (value*settings.steps_per_mm[parameter] > (MAX_STEP_RATE_HZ*60.0)) {  return(STATUS_MAX_STEP_RATE_EXCEEDED); }
+            #ifdef MAX_STEP_RATE_HZ
+              if (value*settings.steps_per_mm[parameter] > (MAX_STEP_RATE_HZ*60.0)) {  return(STATUS_MAX_STEP_RATE_EXCEEDED); }
+            #endif
             settings.max_rate[parameter] = value;
             break;
           case 2: settings.acceleration[parameter] = value*60*60; break; // Convert to mm/min^2 for grbl internal use.
@@ -279,9 +289,14 @@ uint8_t settings_store_global_setting(uint8_t parameter, float value) {
 // Initialize the config subsystem
 void settings_init() {
   if(!read_global_settings()) {
+#ifndef STM32F103C8
+    // STM32F103C8 is not ready when doing this. So print out display is not needed in here.
     report_status_message(STATUS_SETTING_READ_FAIL);
+#endif
     settings_restore(SETTINGS_RESTORE_ALL); // Force restore all EEPROM data.
+#ifndef STM32F103C8
     report_grbl_settings();
+#endif
   }
 
   // NOTE: Checking paramater data, startup lines, and build info string should be done here, 
@@ -299,7 +314,7 @@ void settings_init() {
 
 
 // Returns step pin mask according to Grbl internal axis indexing.
-uint8_t get_step_pin_mask(uint8_t axis_idx)
+PORTPINDEF get_step_pin_mask(uint8_t axis_idx)
 {
   if ( axis_idx == X_AXIS ) { return((1<<X_STEP_BIT)); }
   if ( axis_idx == Y_AXIS ) { return((1<<Y_STEP_BIT)); }
@@ -308,7 +323,7 @@ uint8_t get_step_pin_mask(uint8_t axis_idx)
 
 
 // Returns direction pin mask according to Grbl internal axis indexing.
-uint8_t get_direction_pin_mask(uint8_t axis_idx)
+PORTPINDEF get_direction_pin_mask(uint8_t axis_idx)
 {
   if ( axis_idx == X_AXIS ) { return((1<<X_DIRECTION_BIT)); }
   if ( axis_idx == Y_AXIS ) { return((1<<Y_DIRECTION_BIT)); }
@@ -317,7 +332,7 @@ uint8_t get_direction_pin_mask(uint8_t axis_idx)
 
 
 // Returns limit pin mask according to Grbl internal axis indexing.
-uint8_t get_limit_pin_mask(uint8_t axis_idx)
+PORTPINDEF get_limit_pin_mask(uint8_t axis_idx)
 {
   if ( axis_idx == X_AXIS ) { return((1<<X_LIMIT_BIT)); }
   if ( axis_idx == Y_AXIS ) { return((1<<Y_LIMIT_BIT)); }

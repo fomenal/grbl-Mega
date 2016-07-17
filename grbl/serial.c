@@ -20,7 +20,24 @@
 */
 
 #include "grbl.h"
+#ifdef WIN32
+#include <stdio.h>
+#include <process.h> 
+#include <conio.h>
+CRITICAL_SECTION CriticalSection; 
 
+HANDLE hSerial = INVALID_HANDLE_VALUE;
+void RecvthreadFunction( void *);
+void SendthreadFunction( void *);
+HANDLE g_hRecv;
+HANDLE g_hSend;
+HANDLE g_hSendEvent;
+
+#endif
+#ifdef STM32F103C8
+#include "stm32f10x.h"
+#include "core_cm3.h"
+#endif
 
 uint8_t serial_rx_buffer[RX_BUFFER_SIZE];
 uint8_t serial_rx_buffer_head = 0;
@@ -57,6 +74,7 @@ uint8_t serial_get_tx_buffer_count()
 
 void serial_init()
 {
+#ifdef AVRTARGET
   // Set baud rate
   #if BAUD_RATE < 57600
     uint16_t UBRR0_value = ((F_CPU / (8L * BAUD_RATE)) - 1)/2 ;
@@ -76,16 +94,80 @@ void serial_init()
   UCSR0B |= 1<<RXCIE0;
 	  
   // defaults to 8-bit, no parity, 1 stop bit
+#endif
+#ifdef WIN32
+  InitializeCriticalSectionAndSpinCount(&CriticalSection,0x00000400);
+#endif
+
 }
 
+#ifdef WIN32
+#define MAX_DEVPATH_LENGTH 1024
+void winserial_init(char *pPort)
+{
+    DCB dcb;
+    BOOL fSuccess;
+    TCHAR devicePath[MAX_DEVPATH_LENGTH];
+    COMMTIMEOUTS commTimeout;
 
+    if (pPort != NULL)
+    {
+        mbstowcs_s(NULL, devicePath, MAX_DEVPATH_LENGTH, pPort, strlen(pPort));
+        hSerial = CreateFile(devicePath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                    OPEN_EXISTING, 0, NULL);
+    }
+    if (hSerial != INVALID_HANDLE_VALUE)
+    {
+        //  Initialize the DCB structure.
+        SecureZeroMemory(&dcb, sizeof(DCB));
+        dcb.DCBlength = sizeof(DCB);
+        fSuccess = GetCommState(hSerial, &dcb);
+        if (!fSuccess) 
+        {
+            CloseHandle(hSerial);
+            hSerial = INVALID_HANDLE_VALUE;
+            return;
+        }
+
+        GetCommState(hSerial, &dcb);
+        dcb.BaudRate = CBR_115200;     //  baud rate
+        dcb.ByteSize = 8;             //  data size, xmit and rcv
+        dcb.Parity   = NOPARITY;      //  parity bit
+        dcb.StopBits = ONESTOPBIT;    //  stop bit
+        dcb.fBinary = TRUE;
+        dcb.fParity = TRUE;
+
+        fSuccess = SetCommState(hSerial, &dcb);
+        if (!fSuccess) 
+        {
+            CloseHandle(hSerial);
+            hSerial = INVALID_HANDLE_VALUE;
+            return;
+        }
+
+        GetCommTimeouts(hSerial, &commTimeout);
+        commTimeout.ReadIntervalTimeout     = 1;
+        commTimeout.ReadTotalTimeoutConstant     = 1;
+        commTimeout.ReadTotalTimeoutMultiplier     = 1;
+        commTimeout.WriteTotalTimeoutConstant     = 10;
+        commTimeout.WriteTotalTimeoutMultiplier = 10;
+        SetCommTimeouts(hSerial, &commTimeout);
+    }
+    g_hRecv = CreateMutex(NULL, false,NULL);
+    g_hSend = CreateMutex(NULL, FALSE, NULL);
+    g_hSendEvent = CreateEvent(NULL,FALSE,FALSE,NULL);
+    _beginthread( RecvthreadFunction, 0, NULL );
+    _beginthread( SendthreadFunction, 0, NULL );
+}
+#endif
 // Writes one byte to the TX serial buffer. Called by main program.
 // TODO: Check if we can speed this up for writing strings, rather than single bytes.
 void serial_write(uint8_t data) {
-  // Calculate next head
-  uint8_t next_head = serial_tx_buffer_head + 1;
-  if (next_head == TX_BUFFER_SIZE) { next_head = 0; }
+#if defined(AVRTARGET) || defined (STM32F103C8)
 
+  // Calculate next head
+    uint8_t next_head = serial_tx_buffer_head + 1;
+    if (next_head == TX_BUFFER_SIZE) { next_head = 0; }
   // Wait until there is space in the buffer
   while (next_head == serial_tx_buffer_tail) { 
     // TODO: Restructure st_prep_buffer() calls to be executed here during a long print.    
@@ -95,12 +177,31 @@ void serial_write(uint8_t data) {
   // Store data and advance head
   serial_tx_buffer[serial_tx_buffer_head] = data;
   serial_tx_buffer_head = next_head;
-  
-  // Enable Data Register Empty Interrupt to make sure tx-streaming is running
+
+#ifdef AVRTARGET
   UCSR0B |=  (1 << UDRIE0); 
+#endif
+#endif
+#ifdef WIN32
+    uint8_t next_head = serial_tx_buffer_head + 1;
+    if (next_head == TX_BUFFER_SIZE) 
+    { 
+        next_head = 0; 
+    }
+    // Wait until there is space in the buffer
+    while (next_head == serial_tx_buffer_tail) 
+    { 
+        Sleep(0);
+    }
+    // Store data and advance head
+    WaitForSingleObject(g_hSend,INFINITE); 
+    serial_tx_buffer[serial_tx_buffer_head] = data;
+    serial_tx_buffer_head = next_head;
+    ReleaseMutex(g_hSend);
+    SetEvent(g_hSendEvent);
+#endif
 }
-
-
+#ifdef AVRTARGET
 // Data Register Empty Interrupt handler
 ISR(SERIAL_UDRE)
 {
@@ -129,15 +230,229 @@ ISR(SERIAL_UDRE)
   // Turn off Data Register Empty Interrupt to stop tx-streaming if this concludes the transfer
   if (tail == serial_tx_buffer_head) { UCSR0B &= ~(1 << UDRIE0); }
 }
+#endif
 
+#ifdef STM32F103C8
+void OnUsbDataRx(uint8_t* dataIn, uint8_t length)
+{
+	//lcd_write_char(*dataIn);
+	uint8_t next_head;
+    uint8_t data;
 
+	// Write data to buffer unless it is full.
+	while (length != 0)
+	{
+        data = *dataIn ++;
+        switch (data) 
+        {
+            case CMD_STATUS_REPORT: 
+                system_set_exec_state_flag(EXEC_STATUS_REPORT); 
+                break; // Set as true
+            case CMD_CYCLE_START:   
+                system_set_exec_state_flag(EXEC_CYCLE_START); 
+                break; // Set as true
+            case CMD_FEED_HOLD:     
+                system_set_exec_state_flag(EXEC_FEED_HOLD); 
+                break; // Set as true
+            case CMD_SAFETY_DOOR:   
+                system_set_exec_state_flag(EXEC_SAFETY_DOOR); 
+                break; // Set as true
+            case CMD_RESET:         
+                mc_reset(); 
+                break; // Call motion control reset routine.
+            default:
+                next_head = serial_rx_buffer_head + 1;
+                if (next_head == RX_BUFFER_SIZE) 
+                { 
+                    next_head = 0; 
+                }
+    
+                // Write data to buffer unless it is full.
+                if (next_head != serial_rx_buffer_tail) 
+                {
+                    serial_rx_buffer[serial_rx_buffer_head] = data;
+                    serial_rx_buffer_head = next_head;    
+                }
+                break;
+        }
+		length --;
+	}
+}
+
+#endif
+#ifdef WIN32
+//#define WINLOG
+void RecvthreadFunction(void *pVoid )
+{
+    DWORD  dwBytesRead;
+    uint8_t data;
+    uint8_t next_head;
+    for (;;)
+    {
+        if (hSerial != INVALID_HANDLE_VALUE)
+        {
+            if (ReadFile(hSerial, &data, 1, &dwBytesRead, NULL) && dwBytesRead == 1)
+            {
+            }
+            else
+            {
+                data = 0;
+            }
+        }
+        else
+        {
+            while (_kbhit() == 0)
+                ;
+            data = _getch();
+        }
+
+        if (data != 0)
+        {
+            // Pick off realtime command characters directly from the serial stream. These characters are
+            // not passed into the buffer, but these set system state flag bits for realtime execution.
+            switch (data) 
+            {
+                case CMD_STATUS_REPORT: 
+                    system_set_exec_state_flag(EXEC_STATUS_REPORT); 
+                     break; // Set as true
+                case CMD_CYCLE_START:   
+                    system_set_exec_state_flag( EXEC_CYCLE_START); 
+                    break; // Set as true
+                case CMD_FEED_HOLD:     
+                    system_set_exec_state_flag(EXEC_FEED_HOLD); 
+                    break; // Set as true
+                case CMD_SAFETY_DOOR:   
+                    system_set_exec_state_flag(EXEC_SAFETY_DOOR); 
+                    break; // Set as true
+                case CMD_RESET:         
+                    mc_reset(); 
+                    break; // Call motion control reset routine.
+
+                default: // Write character to buffer    
+                    WaitForSingleObject(g_hRecv,INFINITE); 
+                    next_head = serial_rx_buffer_head + 1;
+                    if (next_head == RX_BUFFER_SIZE) 
+                    { 
+                        next_head = 0; 
+                    }
+    
+                    // Write data to buffer unless it is full.
+                    if (next_head != serial_rx_buffer_tail) 
+                    {
+                        serial_rx_buffer[serial_rx_buffer_head] = data;
+                        serial_rx_buffer_head = next_head;    
+                    }
+                    ReleaseMutex(g_hRecv);
+                    break;
+            }
+        }
+    }
+}
+void SendthreadFunction( void *pVoid)
+{
+    unsigned char szBuf[TX_BUFFER_SIZE];
+#if 1
+    DWORD dwBytesWritten;
+    for (;;)
+    {
+	    uint16_t USB_Tx_length;
+        WaitForSingleObject(g_hSendEvent,INFINITE); 
+        WaitForSingleObject(g_hSend,INFINITE); 
+
+        if (serial_tx_buffer_head > serial_tx_buffer_tail)
+		    USB_Tx_length = serial_tx_buffer_head - serial_tx_buffer_tail;
+        else
+        {
+		    USB_Tx_length = TX_BUFFER_SIZE - serial_tx_buffer_tail;
+            if (USB_Tx_length == 0)
+            {
+                USB_Tx_length = serial_tx_buffer_head;
+                serial_tx_buffer_tail = 0;
+            }
+        }
+    if (USB_Tx_length > 16)
+        USB_Tx_length = 16;
+
+        memcpy(szBuf,&serial_tx_buffer[serial_tx_buffer_tail],USB_Tx_length);
+        serial_tx_buffer_tail += USB_Tx_length;
+        if (serial_tx_buffer_tail == TX_BUFFER_SIZE)
+            serial_tx_buffer_tail = 0;
+
+        // copy data
+        ReleaseMutex(g_hSend);
+        if (serial_tx_buffer_head == serial_tx_buffer_tail)
+            ResetEvent(g_hSendEvent);
+        else
+            SetEvent(g_hSendEvent);
+
+        if (USB_Tx_length != 0)
+        {
+            if (hSerial != INVALID_HANDLE_VALUE)
+                WriteFile(hSerial, szBuf,USB_Tx_length, &dwBytesWritten, NULL);
+            else
+                fwrite(szBuf,1,USB_Tx_length,stdout);
+        }
+    }
+
+#else
+    DWORD nTotalByte;
+    DWORD dwBytesWritten;
+    for (;;)
+    {
+        WaitForSingleObject(g_hSendEvent,INFINITE); 
+        WaitForSingleObject(g_hSend,INFINITE); 
+        nTotalByte = 0;
+        while (serial_tx_buffer_tail != serial_tx_buffer_head)
+        {
+            szBuf[nTotalByte ++] = serial_tx_buffer[serial_tx_buffer_tail ++];
+            if (serial_tx_buffer_tail == TX_BUFFER_SIZE)
+                serial_tx_buffer_tail = 0;
+        }
+        // copy data
+        ReleaseMutex(g_hSend);
+        if (nTotalByte != 0)
+        {
+            if (hSerial != INVALID_HANDLE_VALUE)
+                WriteFile(hSerial, szBuf,nTotalByte, &dwBytesWritten, NULL);
+            else
+                fwrite(szBuf,1,nTotalByte,stdout);
+        }
+    }
+#endif
+}
+#endif
 // Fetches the first byte in the serial read buffer. Called by main program.
 uint8_t serial_read()
 {
+#ifdef WIN32
+    uint8_t tail = serial_rx_buffer_tail; // Temporary serial_rx_buffer_tail (to optimize for volatile)
+    if (serial_rx_buffer_head == tail) 
+    {
+        return SERIAL_NO_DATA;
+    } 
+    else 
+    {
+        uint8_t data;
+        WaitForSingleObject(g_hRecv,INFINITE); 
+        data = serial_rx_buffer[tail];
+        tail++;
+        if (tail == RX_BUFFER_SIZE) 
+        { 
+            tail = 0; 
+        }
+        serial_rx_buffer_tail = tail;
+        ReleaseMutex(g_hRecv);
+        return data;
+    }
+#endif
+#if defined(AVRTARGET) || defined (STM32F103C8)
   uint8_t tail = serial_rx_buffer_tail; // Temporary serial_rx_buffer_tail (to optimize for volatile)
   if (serial_rx_buffer_head == tail) {
     return SERIAL_NO_DATA;
   } else {
+#if defined (STM32F103C8)
+	  NVIC_DisableIRQ(USB_LP_CAN1_RX0_IRQn);
+#endif
     uint8_t data = serial_rx_buffer[tail];
     
     tail++;
@@ -150,12 +465,16 @@ uint8_t serial_read()
         UCSR0B |=  (1 << UDRIE0); // Force TX
       }
     #endif
+#if defined (STM32F103C8)
+      NVIC_EnableIRQ(USB_LP_CAN1_RX0_IRQn);
+#endif
     
     return data;
   }
+#endif
 }
 
-
+#ifdef AVRTARGET
 ISR(SERIAL_RX)
 {
   uint8_t data = UDR0;
@@ -189,7 +508,7 @@ ISR(SERIAL_RX)
       //TODO: else alarm on overflow?
   }
 }
-
+#endif
 
 void serial_reset_read_buffer() 
 {

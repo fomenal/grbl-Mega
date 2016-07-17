@@ -20,23 +20,31 @@
 */
 
 #include "grbl.h"
-
+#ifdef WIN32
+#define WINLOG
+#include <stdio.h>
+#endif
 // Define line flags. Includes comment type tracking and line overflow detection.
 #define LINE_FLAG_OVERFLOW bit(0)
 #define LINE_FLAG_COMMENT_PARENTHESES bit(1)
 #define LINE_FLAG_COMMENT_SEMICOLON bit(2)
 
 
-static char line[LINE_BUFFER_SIZE]; // Line to be executed. Zero-terminated.
+char line[LINE_BUFFER_SIZE]; // Line to be executed. Zero-terminated.
+#ifdef LEDBLINK
+void LedBlink(void);
+#endif
 
 static void protocol_exec_rt_suspend();
-
 
 /* 
   GRBL PRIMARY LOOP:
 */
 void protocol_main_loop()
 {
+  uint8_t line_flags = 0;
+  uint8_t char_counter = 0;
+  uint8_t c;
   // ------------------------------------------------------------
   // Complete initialization procedures upon a power-up or reset.
   // ------------------------------------------------------------
@@ -48,8 +56,8 @@ void protocol_main_loop()
   if (sys.state == STATE_ALARM) {
     report_feedback_message(MESSAGE_ALARM_LOCK); 
   } else {
-    // All systems go! But first check for safety door.
     sys.state = STATE_IDLE;
+    // All systems go! But first check for safety door.
     if (system_check_safety_door_ajar()) {
       bit_true(sys_rt_exec_state, EXEC_SAFETY_DOOR);
       protocol_execute_realtime(); // Enter safety door mode. Should return as IDLE state.
@@ -62,20 +70,19 @@ void protocol_main_loop()
   // This is also where Grbl idles while waiting for something to do.
   // ---------------------------------------------------------------------------------  
   
-  uint8_t line_flags = 0;
-  uint8_t char_counter = 0;
-  uint8_t c;
   for (;;) {
 
     // Process one line of incoming serial data, as the data becomes available. Performs an
     // initial filtering by removing spaces and comments and capitalizing all letters.    
+    
     while((c = serial_read()) != SERIAL_NO_DATA) {
       if ((c == '\n') || (c == '\r')) { // End of line reached
-
         protocol_execute_realtime(); // Runtime command check point.
-        if (sys.abort) { return; } // Bail to calling function upon system abort  
-
+        if (sys.abort) { return; } // Bail to calling function upon system abort 
         line[char_counter] = 0; // Set string termination character.
+#ifdef LEDBLINK
+        LedBlink();
+#endif
         #ifdef REPORT_ECHO_LINE_RECEIVED
           report_echo_line_received(line);
         #endif
@@ -101,9 +108,7 @@ void protocol_main_loop()
         // Reset tracking data for next line.
         line_flags = 0;
         char_counter = 0;
-        
       } else {
-      
         if (line_flags) {
           // Throw away all (except EOL) comment characters and overflow characters.
           if (c == ')') {
@@ -125,6 +130,7 @@ void protocol_main_loop()
           } else if (c == ';') {
             // NOTE: ';' comment to EOL is a LinuxCNC definition. Not NIST.
             line_flags |= LINE_FLAG_COMMENT_SEMICOLON;
+            
           // TODO: Install '%' feature 
           // } else if (c == '%') {
             // Program start-end percent sign NOT SUPPORTED.
@@ -141,7 +147,6 @@ void protocol_main_loop()
             line[char_counter++] = c;
           }
         }
-        
       }
     }
     
@@ -152,7 +157,6 @@ void protocol_main_loop()
 
     protocol_execute_realtime();  // Runtime command check point.
     if (sys.abort) { return; } // Bail to main() program loop to reset system.
-              
     #ifdef SLEEP_ENABLE
       // Check for sleep conditions and execute auto-park, if timeout duration elapses.
       sleep_check();    
@@ -161,7 +165,6 @@ void protocol_main_loop()
   
   return; /* Never reached */
 }
-
 
 // Block until all buffered steps are executed or in a cycle state. Works with feed hold
 // during a synchronize call, if it should happen. Also, waits for clean cycle end.
@@ -219,6 +222,7 @@ void protocol_execute_realtime()
 void protocol_exec_rt_system()
 {
   uint8_t rt_exec; // Temp variable to avoid calling volatile multiple times.
+  // Check and execute alarms. 
   rt_exec = sys_rt_exec_alarm; // Copy volatile sys_rt_exec_alarm.
   if (rt_exec) { // Enter only if any bit flag is true
     // System alarm. Everything has shutdown by something that has gone severely wrong. Report
@@ -259,27 +263,28 @@ void protocol_exec_rt_system()
   }
   
   rt_exec = sys_rt_exec_state; // Copy volatile sys_rt_exec_state.
-  if (rt_exec) {
+  if (rt_exec) { 
   
     // Execute system abort. 
     if (rt_exec & EXEC_RESET) {
       sys.abort = true;  // Only place this is set true.
       return; // Nothing else to do but exit.
     }
-
+    
     // Execute and serial print status
     if (rt_exec & EXEC_STATUS_REPORT) { 
       report_realtime_status();
       system_clear_exec_state_flag(EXEC_STATUS_REPORT);
     }
   
+    // Execute hold states.
     // NOTE: The math involved to calculate the hold should be low enough for most, if not all, 
     // operational scenarios. Once hold is initiated, the system enters a suspend state to block
     // all main program processes until either reset or resumed.
     if (rt_exec & (EXEC_MOTION_CANCEL | EXEC_FEED_HOLD | EXEC_SAFETY_DOOR | EXEC_SLEEP)) {
-  
+     
       // TODO: CHECK MODE? How to handle this? Likely nothing, since it only works when IDLE and then resets Grbl.
-            
+                
       // State check for allowable states for hold methods.
       if (!(sys.state & (STATE_ALARM | STATE_CHECK_MODE))) {
 
@@ -293,7 +298,7 @@ void protocol_exec_rt_system()
           sys.suspend = SUSPEND_HOLD_COMPLETE;
           sys.step_control = STEP_CONTROL_END_MOTION; 
         }
-    
+       
         // Execute and flag a motion cancel with deceleration and return to idle. Used primarily by probing cycle
         // to halt and cancel the remainder of the motion.
         if (rt_exec & EXEC_MOTION_CANCEL) {
@@ -303,13 +308,13 @@ void protocol_exec_rt_system()
           // NOTE: Ensures the motion cancel is handled correctly if it is active during a HOLD or DOOR state.
           sys.suspend |= SUSPEND_MOTION_CANCEL;  // Indicate motion cancel when resuming.
         }
-
+    
         // Execute a feed hold with deceleration, if required. Then, suspend system.
         if (rt_exec & EXEC_FEED_HOLD) {
           // Block SAFETY_DOOR and SLEEP states from changing to HOLD state.
           if (!(sys.state & (STATE_SAFETY_DOOR|STATE_SLEEP))) { sys.state = STATE_HOLD; }
         }
-
+  
         // Execute a safety door stop with a feed hold and disable spindle/coolant.
         // NOTE: Safety door differs from feed holds by stopping everything no matter state, disables powered
         // devices (spindle/coolant), and blocks resuming until switch is re-engaged.
@@ -338,16 +343,13 @@ void protocol_exec_rt_system()
           sys.suspend |= SUSPEND_SAFETY_DOOR_AJAR; 
           if (sys.state != STATE_SLEEP) { sys.state = STATE_SAFETY_DOOR; }
         }
-        
         if (rt_exec & EXEC_SLEEP) {
           sys.state = STATE_SLEEP;
         }
-     
       }
-  
       system_clear_exec_state_flag((EXEC_MOTION_CANCEL | EXEC_FEED_HOLD | EXEC_SAFETY_DOOR | EXEC_SLEEP));      
     }
-    
+          
     // Execute a cycle start by starting the stepper interrupt to begin executing the blocks in queue.
     if (rt_exec & EXEC_CYCLE_START) {
       // Block if called at same time as the hold commands: feed hold, motion cancel, and safety door.
@@ -415,7 +417,6 @@ void protocol_exec_rt_system()
   }
 
 }
-
 
 // Handles Grbl system suspend procedures, such as feed hold, safety door, and parking motion.
 // The system will enter this loop, create local variables for suspend tasks, and return to

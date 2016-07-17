@@ -86,7 +86,18 @@ void mc_arc(float *position, float *target, float *offset, float radius, float f
   float rt_axis1 = target[axis_1] - center_axis1;
   
   // CCW angle between position and target from circle center. Only one atan2() trig computation required.
-  float angular_travel = atan2(r_axis0*rt_axis1-r_axis1*rt_axis0, r_axis0*rt_axis0+r_axis1*rt_axis1);
+  float angular_travel = (float)atan2(r_axis0*rt_axis1-r_axis1*rt_axis0, r_axis0*rt_axis0+r_axis1*rt_axis1);
+  uint16_t segments;
+  float theta_per_segment;
+  float linear_per_segment;
+  float cos_T;
+  float sin_T;
+    float sin_Ti;
+    float cos_Ti;
+    float r_axisi;
+    uint16_t i;
+    uint8_t count = 0;
+
   if (is_clockwise_arc) { // Correct atan2 output per direction
     if (angular_travel >= -ARC_ANGULAR_TRAVEL_EPSILON) { angular_travel -= 2*M_PI; }
   } else {
@@ -97,7 +108,7 @@ void mc_arc(float *position, float *target, float *offset, float radius, float f
   // (2x) settings.arc_tolerance. For 99% of users, this is just fine. If a different arc segment fit
   // is desired, i.e. least-squares, midpoint on arc, just change the mm_per_arc_segment calculation.
   // For the intended uses of Grbl, this value shouldn't exceed 2000 for the strictest of cases.
-  uint16_t segments = floor(fabs(0.5*angular_travel*radius)/
+  segments = (uint16_t)floor(fabs(0.5*angular_travel*radius)/
                           sqrt(settings.arc_tolerance*(2*radius - settings.arc_tolerance)) );
   
   if (segments) { 
@@ -106,8 +117,8 @@ void mc_arc(float *position, float *target, float *offset, float radius, float f
     // all segments.
     if (invert_feed_rate) { feed_rate *= segments; }
    
-    float theta_per_segment = angular_travel/segments;
-    float linear_per_segment = (target[axis_linear] - position[axis_linear])/segments;
+    theta_per_segment = angular_travel/segments;
+    linear_per_segment = (target[axis_linear] - position[axis_linear])/segments;
 
     /* Vector rotation by transformation matrix: r is the original vector, r_T is the rotated vector,
        and phi is the angle of rotation. Solution approach by Jens Geisler.
@@ -135,15 +146,11 @@ void mc_arc(float *position, float *target, float *offset, float radius, float f
        This is important when there are successive arc motions. 
     */
     // Computes: cos_T = 1 - theta_per_segment^2/2, sin_T = theta_per_segment - theta_per_segment^3/6) in ~52usec
-    float cos_T = 2.0 - theta_per_segment*theta_per_segment;
-    float sin_T = theta_per_segment*0.16666667*(cos_T + 4.0);
-    cos_T *= 0.5;
+    cos_T = (float)(2.0 - theta_per_segment*theta_per_segment);
+    sin_T = (float)(theta_per_segment*0.16666667*(cos_T + 4.0));
+    cos_T *= (float)0.5;
 
-    float sin_Ti;
-    float cos_Ti;
-    float r_axisi;
-    uint16_t i;
-    uint8_t count = 0;
+    count = 0;
   
     for (i = 1; i<segments; i++) { // Increment (segments-1).
       
@@ -156,8 +163,8 @@ void mc_arc(float *position, float *target, float *offset, float radius, float f
       } else {      
         // Arc correction to radius vector. Computed only every N_ARC_CORRECTION increments. ~375 usec
         // Compute exact location by applying transformation matrix from initial radius vector(=-offset).
-        cos_Ti = cos(i*theta_per_segment);
-        sin_Ti = sin(i*theta_per_segment);
+        cos_Ti = (float)cos(i*theta_per_segment);
+        sin_Ti = (float)sin(i*theta_per_segment);
         r_axis0 = -offset[axis_0]*cos_Ti + offset[axis_1]*sin_Ti;
         r_axis1 = -offset[axis_0]*sin_Ti - offset[axis_1]*cos_Ti;
         count = 0;
@@ -182,11 +189,10 @@ void mc_arc(float *position, float *target, float *offset, float radius, float f
 // Execute dwell in seconds.
 void mc_dwell(float seconds) 
 {
-  if (sys.state == STATE_CHECK_MODE) { return; }
+ if (sys.state == STATE_CHECK_MODE) { return; }
   protocol_buffer_synchronize();
   delay_sec(seconds, DELAY_MODE_DWELL);
 }
-
 
 // Perform homing cycle to locate and set machine zero. Only '$H' executes this command.
 // NOTE: There should be no motions in the buffer and Grbl must be in an idle state before
@@ -295,15 +301,16 @@ void mc_probe_cycle(float *target, float feed_rate, uint8_t invert_feed_rate, ui
     report_probe_parameters();
   #endif
 }
-
-
+#ifdef PARKING_ENABLE
 // Plans and executes the single special motion case for parking. Independent of main planner buffer.
 // NOTE: Uses the always free planner ring buffer head to store motion parameters for execution.
 void mc_parking_motion(float *parking_target, float feed_rate) 
 {
+  uint8_t plan_status;
+
   if (sys.abort) { return; } // Block during abort.
   
-  uint8_t plan_status = plan_buffer_line(parking_target, feed_rate, false, true, PARKING_MOTION_LINE_NUMBER);
+  plan_status = plan_buffer_line(parking_target, feed_rate, false, true, PARKING_MOTION_LINE_NUMBER);
   if (plan_status) {
 		bit_true(sys.step_control, STEP_CONTROL_EXECUTE_PARK); 
 		bit_false(sys.step_control, STEP_CONTROL_END_MOTION); // Allow parking motion to execute, if feed hold is active.
@@ -321,8 +328,7 @@ void mc_parking_motion(float *parking_target, float feed_rate)
   }
 
 }
-
-
+#endif
 // Method to ready the system to reset by setting the realtime reset command and killing any
 // active processes in the system. This also checks if a system reset is issued while Grbl
 // is in a motion state. If so, kills the steppers and sets the system alarm to flag position

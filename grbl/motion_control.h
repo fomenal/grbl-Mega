@@ -48,9 +48,6 @@ void mc_homing_cycle();
 void mc_probe_cycle(float *target, float feed_rate, uint8_t invert_feed_rate, uint8_t is_probe_away,
   uint8_t is_no_error, int32_t line_number);
 
-// Plans and executes the single special motion case for parking. Independent of main planner buffer.
-void mc_parking_motion(float *parking_target, float feed_rate);
-
 // Performs system reset. If in motion state, kills all motion and sets system alarm.
 void mc_reset();
 

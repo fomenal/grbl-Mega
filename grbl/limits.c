@@ -21,7 +21,6 @@
   
 #include "grbl.h"
 
-
 // Homing axis search distance multiplier. Computed by this value times the cycle travel.
 #ifndef HOMING_AXIS_SEARCH_SCALAR
   #define HOMING_AXIS_SEARCH_SCALAR  1.5 // Must be > 1 to ensure limit switch will be engaged.
@@ -32,6 +31,7 @@
 
 void limits_init() 
 {
+#ifdef AVRTARGET
   LIMIT_DDR &= ~(LIMIT_MASK); // Set as input pins
 
   #ifdef DISABLE_LIMIT_PIN_PULL_UP
@@ -52,14 +52,57 @@ void limits_init()
     WDTCSR |= (1<<WDCE) | (1<<WDE);
     WDTCSR = (1<<WDP0); // Set time-out at ~32msec.
   #endif
+#endif
+#ifdef STM32F103C8
+    GPIO_InitTypeDef GPIO_InitStructure;
+	RCC_APB2PeriphClockCmd(RCC_LIMIT_PORT | RCC_APB2Periph_AFIO, ENABLE);
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+#ifdef DISABLE_LIMIT_PIN_PULL_UP
+	GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IN_FLOATING;
+#else
+	GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IPU;
+#endif
+	GPIO_InitStructure.GPIO_Pin   = LIMIT_MASK;
+	GPIO_Init(LIMIT_PORT, &GPIO_InitStructure);
+
+    if (bit_istrue(settings.flags,BITFLAG_HARD_LIMIT_ENABLE)) 
+    {
+	    GPIO_EXTILineConfig(GPIO_LIMIT_PORT, X_LIMIT_BIT);
+	    GPIO_EXTILineConfig(GPIO_LIMIT_PORT, Y_LIMIT_BIT);
+	    GPIO_EXTILineConfig(GPIO_LIMIT_PORT, Z_LIMIT_BIT);
+
+	    EXTI_InitTypeDef EXTI_InitStructure;
+	    EXTI_InitStructure.EXTI_Line=  LIMIT_MASK;    //
+	    EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt; //Interrupt mode, optional values for the interrupt EXTI_Mode_Interrupt and event EXTI_Mode_Event.
+	    EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Falling; //Trigger mode, can be a falling edge trigger EXTI_Trigger_Falling, the rising edge triggered EXTI_Trigger_Rising, or any level (rising edge and falling edge trigger EXTI_Trigger_Rising_Falling)
+	    EXTI_InitStructure.EXTI_LineCmd = ENABLE;
+	    EXTI_Init(&EXTI_InitStructure);
+
+	    NVIC_InitTypeDef NVIC_InitStructure;
+	    NVIC_InitStructure.NVIC_IRQChannel = EXTI15_10_IRQn; //Enable keypad external interrupt channel
+	    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0x02; //Priority 2,
+	    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0x02; //Sub priority 2
+	    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE; //Enable external interrupt channel
+	    NVIC_Init(&NVIC_InitStructure);
+    } 
+    else 
+    {
+        limits_disable(); 
+    }
+#endif
 }
 
 
 // Disables hard limits.
 void limits_disable()
 {
+#ifdef AVRTARGET
   LIMIT_PCMSK &= ~LIMIT_MASK;  // Disable specific pins of the Pin Change Interrupt
   PCICR &= ~(1 << LIMIT_INT);  // Disable Pin Change Interrupt
+#endif
+#ifdef STM32F103C8
+  NVIC_DisableIRQ(EXTI15_10_IRQn);
+#endif
 }
 
 
@@ -69,10 +112,17 @@ void limits_disable()
 uint8_t limits_get_state()
 {
   uint8_t limit_state = 0;
+#if defined(AVRTARGET) || defined(STM32F103C8)
+#if defined(AVRTARGET)
   uint8_t pin = (LIMIT_PIN & LIMIT_MASK);
+#endif
+#if defined(STM32F103C8)
+  uint16_t pin = GPIO_ReadInputData(LIMIT_PIN);
+#endif
   #ifdef INVERT_LIMIT_PIN_MASK
     pin ^= INVERT_LIMIT_PIN_MASK;
   #endif
+
   if (bit_isfalse(settings.flags,BITFLAG_INVERT_LIMIT_PINS)) { pin ^= LIMIT_MASK; }
   if (pin) {  
     uint8_t idx;
@@ -80,6 +130,7 @@ uint8_t limits_get_state()
       if (pin & get_limit_pin_mask(idx)) { limit_state |= (1 << idx); }
     }
   }
+#endif
   return(limit_state);
 }
 
@@ -96,8 +147,28 @@ uint8_t limits_get_state()
 // special pinout for an e-stop, but it is generally recommended to just directly connect
 // your e-stop switch to the Arduino reset pin, since it is the most correct way to do this.
 #ifndef ENABLE_SOFTWARE_DEBOUNCE
+#if defined(AVRTARGET) || defined (STM32F103C8)
+#if defined(AVRTARGET) 
   ISR(LIMIT_INT_vect) // DEFAULT: Limit pin change interrupt process. 
+#else
+void EXTI15_10_IRQHandler(void)
+#endif
   {
+#if defined (STM32F103C8)
+	if(EXTI_GetITStatus(1 << X_LIMIT_BIT)!=RESET)
+	{
+		EXTI_ClearITPendingBit(1 << X_LIMIT_BIT);
+	}
+	if(EXTI_GetITStatus(1 << Y_LIMIT_BIT)!=RESET)
+	{
+		EXTI_ClearITPendingBit(1 << Y_LIMIT_BIT);
+	}
+	if(EXTI_GetITStatus(1 << Z_LIMIT_BIT)!=RESET)
+	{
+		EXTI_ClearITPendingBit(1 << Z_LIMIT_BIT);
+	}
+	NVIC_ClearPendingIRQ(EXTI15_10_IRQn);
+#endif
     // Ignore limit switches if already in an alarm state or in-process of executing an alarm.
     // When in the alarm state, Grbl should have been reset or will force a reset, so any pending 
     // moves in the planner and serial buffers are all cleared and newly sent blocks will be 
@@ -118,6 +189,7 @@ uint8_t limits_get_state()
       }
     }
   }  
+#endif
 #else // OPTIONAL: Software debounce limit pin routine.
   // Upon limit pin change, enable watchdog timer to create a short delay. 
   ISR(LIMIT_INT_vect) { if (!(WDTCSR & (1<<WDIE))) { WDTCSR |= (1<<WDIE); } }
@@ -146,7 +218,6 @@ uint8_t limits_get_state()
 // TODO: Move limit pin-specific calls to a general function for portability.
 void limits_go_home(uint8_t cycle_mask) 
 {
-  if (sys.abort) { return; } // Block if system reset has been issued.
 
   // Initialize
   uint8_t n_cycle = (2*N_HOMING_LOCATE_CYCLE+1);
@@ -154,6 +225,15 @@ void limits_go_home(uint8_t cycle_mask)
   float target[N_AXIS];
   float max_travel = 0.0;
   uint8_t idx;
+  bool approach = true;
+  float homing_rate = settings.homing_seek_rate;
+
+  uint8_t limit_state, axislock, n_active_axis;
+  int32_t set_axis_position;
+
+
+  if (sys.abort) { return; } // Block if system reset has been issued.
+
   for (idx=0; idx<N_AXIS; idx++) {  
     // Initialize step pin masks
     step_pin[idx] = get_step_pin_mask(idx);
@@ -164,15 +244,11 @@ void limits_go_home(uint8_t cycle_mask)
     if (bit_istrue(cycle_mask,bit(idx))) { 
       // Set target based on max_travel setting. Ensure homing switches engaged with search scalar.
       // NOTE: settings.max_travel[] is stored as a negative value.
-      max_travel = max(max_travel,(-HOMING_AXIS_SEARCH_SCALAR)*settings.max_travel[idx]);
+      max_travel = (float)max(max_travel,(-HOMING_AXIS_SEARCH_SCALAR)*settings.max_travel[idx]);
     }
   }
 
   // Set search mode with approach at seek rate to quickly engage the specified cycle_mask limit switches.
-  bool approach = true;
-  float homing_rate = settings.homing_seek_rate;
-
-  uint8_t limit_state, axislock, n_active_axis;
   do {
 
     system_convert_array_steps_to_mpos(target,sys.position);
@@ -199,7 +275,7 @@ void limits_go_home(uint8_t cycle_mask)
       }
 
     }
-    homing_rate *= sqrt(n_active_axis); // [sqrt(N_AXIS)] Adjust so individual axes all move at homing rate.
+    homing_rate *= (float)sqrt(n_active_axis); // [sqrt(N_AXIS)] Adjust so individual axes all move at homing rate.
     sys.homing_axis_lock = axislock;
 
     plan_sync_position(); // Sync planner position to current machine position.
@@ -251,7 +327,7 @@ void limits_go_home(uint8_t cycle_mask)
 
     // After first cycle, homing enters locating phase. Shorten search to pull-off distance.
     if (approach) { 
-      max_travel = settings.homing_pulloff*HOMING_AXIS_LOCATE_SCALAR; 
+      max_travel = settings.homing_pulloff*(float)HOMING_AXIS_LOCATE_SCALAR; 
       homing_rate = settings.homing_feed_rate;
     } else {
       max_travel = settings.homing_pulloff;    
@@ -269,7 +345,6 @@ void limits_go_home(uint8_t cycle_mask)
   #ifdef COREXY
     int32_t off_axis_position = 0;
   #endif
-  int32_t set_axis_position;
   // Set machine positions for homed limit switches. Don't update non-homed axes.
   for (idx=0; idx<N_AXIS; idx++) {
     // NOTE: settings.max_travel[] is stored as a negative value.

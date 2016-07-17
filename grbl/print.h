@@ -48,7 +48,9 @@ void printFloat(float n, uint8_t decimal_places);
 //  - SettingValue: Handles all floating point settings values (always in mm.)
 //  - RPMValue: Handles spindle RPM values in settings and reports.
 void printFloat_CoordValue(float n);
+
 void printFloat_RateValue(float n);
+
 void printFloat_SettingValue(float n);
 void printFloat_RPMValue(float n);
 

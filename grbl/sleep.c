@@ -20,6 +20,9 @@
 
 #include "grbl.h" 
 
+#ifdef WIN32
+extern LARGE_INTEGER Win32Frequency;
+#endif
 
 #define SLEEP_SEC_PER_OVERFLOW (65535.0*64.0/F_CPU) // With 16-bit timer size and prescaler
 #define SLEEP_COUNT_MAX (SLEEP_DURATION/SLEEP_SEC_PER_OVERFLOW)
@@ -30,18 +33,26 @@ volatile uint8_t sleep_counter;
 // Initialize sleep counters and enable timer.
 static void sleep_enable() { 
   sleep_counter = 0; // Reset sleep counter
+#ifdef AVRTARGET
   TCNT3 = 0;  // Reset timer3 counter register
   TIMSK3 |= (1<<TOIE3); // Enable timer3 overflow interrupt
+#endif
 } 
 
 
 // Disable sleep timer.
-static void sleep_disable() {  TIMSK3 &= ~(1<<TOIE3); } // Disable timer overflow interrupt
+static void sleep_disable() 
+{  
+#ifdef AVRTARGET
+    TIMSK3 &= ~(1<<TOIE3); 
+#endif
+} // Disable timer overflow interrupt
 
 
 // Initialization routine for sleep timer.
 void sleep_init()
 {
+#ifdef AVRTARGET
   // Configure Timer 3: Sleep Counter Overflow Interrupt
   // NOTE: By using an overflow interrupt, the timer is automatically reloaded upon overflow.
   TCCR3B = 0; // Normal operation. Overflow.
@@ -51,12 +62,14 @@ void sleep_init()
   // TCCR3B |= (1<<CS31); // Enable timer with 1/8 prescaler. ~8.3sec max with uint8 and 32.7msec/tick
   TCCR3B |= (1<<CS31)|(1<<CS30); // Enable timer with 1/64 prescaler. ~66.8sec max with uint8 and 0.262sec/tick
   // TCCR3B |= (1<<CS32)|(1<<CS30); // Enable timer with 1/1024 prescaler. ~17.8min max with uint8 and 4.19sec/tick
+#endif
   sleep_disable();
 }
 
-
+#ifdef AVRTARGET
 // Increment sleep counter with each timer overflow.
 ISR(TIMER3_OVF_vect) { sleep_counter++; }
+#endif
 
 
 // Starts sleep timer if running conditions are satified. When elaped, sleep mode is executed.

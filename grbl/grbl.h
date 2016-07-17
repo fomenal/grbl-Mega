@@ -26,17 +26,58 @@
 #define GRBL_VERSION_BUILD "20160510"
 
 // Define standard libraries used by Grbl.
+#ifdef AVRTARGET
 #include <avr/io.h>
 #include <avr/pgmspace.h>
 #include <avr/interrupt.h>
 #include <avr/wdt.h>
 #include <util/delay.h>
-#include <math.h>
 #include <inttypes.h>    
+#include <stdbool.h>
+#define PORTPINDEF uint8_t
+#endif
+#include <math.h>
+#ifdef WIN32
+#include <Windows.h>
+typedef signed char  int8_t;
+typedef signed short int16_t;
+typedef signed int   int32_t;
+typedef unsigned char  uint8_t;
+typedef unsigned short uint16_t;
+typedef unsigned int   uint32_t;
+typedef signed long long   int64_t;
+typedef unsigned long long uint64_t;
+typedef int bool;
+#define false 0
+#define true 1
+#define trunc(x) (int32_t)x
+#define lround(x) (int32_t) (x + 0.5)
+#define round(x) (int32_t) (x + 0.5)
+#define PSTR(x) x
+#define pgm_read_byte_near(x) *(x)
+#define _delay_ms(x) Sleep(x)
+#define M_PI (float)3.1415926
+#define LOG(x,y)
+#define PORTPINDEF uint8_t
+#endif
+#ifdef STM32F103C8
+#include "stm32f10x.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_exti.h"
+#include "misc.h"
+#define PSTR(x) x
+#define pgm_read_byte_near(x) *(x)
+void _delay_ms(uint32_t x);
+void _delay_us(uint32_t x);
+#define false 0
+#define true 1
+#define PORTPINDEF uint16_t
+typedef int bool;
+#define NOEEPROMSUPPORT
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 // Define the Grbl system include files. NOTE: Do not alter organization.
 #include "config.h"
@@ -59,5 +100,4 @@
 #include "spindle_control.h"
 #include "stepper.h"
 #include "sleep.h"
-
 #endif

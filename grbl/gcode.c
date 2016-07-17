@@ -80,8 +80,6 @@ uint8_t gc_execute_line(char *line)
      values struct, word tracking variables, and a non-modal commands tracker for the new 
      block. This struct contains all of the necessary information to execute the block. */
      
-  memset(&gc_block, 0, sizeof(parser_block_t)); // Initialize the parser block struct.
-  memcpy(&gc_block.modal,&gc_state.modal,sizeof(gc_modal_t)); // Copy current modes
   uint8_t axis_command = AXIS_COMMAND_NONE;
   uint8_t axis_0, axis_1, axis_linear;
   uint8_t coord_select = 0; // Tracks G10 P coordinate selection for execution
@@ -108,6 +106,14 @@ uint8_t gc_execute_line(char *line)
   float value;
   uint8_t int_value = 0;
   uint16_t mantissa = 0;
+  uint8_t idx;
+  float x,y;
+    float h_x2_div_d;
+    float target_r;
+    float delta_r;
+
+  memset(&gc_block, 0, sizeof(parser_block_t)); // Initialize the parser block struct.
+  memcpy(&gc_block.modal,&gc_state.modal,sizeof(gc_modal_t)); // Copy current modes
 
   while (line[char_counter] != 0) { // Loop until no more g-code words in line.
     
@@ -430,7 +436,7 @@ uint8_t gc_execute_line(char *line)
     // - In units per mm mode: If F word passed, ensure value is in mm/min, otherwise push last state value.
     if (gc_state.modal.feed_rate == FEED_RATE_MODE_UNITS_PER_MIN) { // Last state is also G94
       if (bit_istrue(value_words,bit(WORD_F))) {
-        if (gc_block.modal.units == UNITS_MODE_INCHES) { gc_block.values.f *= MM_PER_INCH; }
+        if (gc_block.modal.units == UNITS_MODE_INCHES) { gc_block.values.f *= (float)MM_PER_INCH; }
       } else {
         gc_block.values.f = gc_state.feed_rate; // Push last state feed rate
       }
@@ -476,11 +482,11 @@ uint8_t gc_execute_line(char *line)
             
   // [12. Set length units ]: N/A
   // Pre-convert XYZ coordinate values to millimeters, if applicable.
-  uint8_t idx;
+
   if (gc_block.modal.units == UNITS_MODE_INCHES) {
     for (idx=0; idx<N_AXIS; idx++) { // Axes indices are consistent, so loop may be used.
       if (bit_istrue(axis_words,bit(idx)) ) {
-        gc_block.values.xyz[idx] *= MM_PER_INCH;
+        gc_block.values.xyz[idx] *= (float)MM_PER_INCH;
       }
     }
   }
@@ -682,7 +688,6 @@ uint8_t gc_execute_line(char *line)
           if (!(axis_words & (bit(axis_0)|bit(axis_1)))) { FAIL(STATUS_GCODE_NO_AXIS_WORDS_IN_PLANE); } // [No axis words in plane]
         
           // Calculate the change in position along each selected axis
-          float x,y;
           x = gc_block.values.xyz[axis_0]-gc_state.position[axis_0]; // Delta x between current position and target
           y = gc_block.values.xyz[axis_1]-gc_state.position[axis_1]; // Delta y between current position and target
 
@@ -691,7 +696,7 @@ uint8_t gc_execute_line(char *line)
             if (gc_check_same_position(gc_state.position, gc_block.values.xyz)) { FAIL(STATUS_GCODE_INVALID_TARGET); } // [Invalid target]
           
             // Convert radius value to proper units.
-            if (gc_block.modal.units == UNITS_MODE_INCHES) { gc_block.values.r *= MM_PER_INCH; }
+            if (gc_block.modal.units == UNITS_MODE_INCHES) { gc_block.values.r *= (float)MM_PER_INCH; }
             /*  We need to calculate the center of the circle that has the designated radius and passes
                 through both the current position and the target position. This method calculates the following
                 set of equations where [x,y] is the vector from current to target position, d == magnitude of 
@@ -742,12 +747,12 @@ uint8_t gc_execute_line(char *line)
 
             // First, use h_x2_div_d to compute 4*h^2 to check if it is negative or r is smaller
             // than d. If so, the sqrt of a negative number is complex and error out.
-            float h_x2_div_d = 4.0 * gc_block.values.r*gc_block.values.r - x*x - y*y;
+            h_x2_div_d = (float)(4.0 * gc_block.values.r*gc_block.values.r - x*x - y*y);
 
             if (h_x2_div_d < 0) { FAIL(STATUS_GCODE_ARC_RADIUS_ERROR); } // [Arc radius error]
     
             // Finish computing h_x2_div_d.
-            h_x2_div_d = -sqrt(h_x2_div_d)/hypot_f(x,y); // == -(h * 2 / d)
+            h_x2_div_d = (float)(-sqrt(h_x2_div_d)/hypot_f(x,y)); // == -(h * 2 / d)
             // Invert the sign of h_x2_div_d if the circle is counter clockwise (see sketch below)
             if (gc_block.modal.motion == MOTION_MODE_CCW_ARC) { h_x2_div_d = -h_x2_div_d; }  
 
@@ -775,8 +780,8 @@ uint8_t gc_execute_line(char *line)
                 gc_block.values.r = -gc_block.values.r; // Finished with r. Set to positive for mc_arc
             }        
             // Complete the operation by calculating the actual center of the arc
-            gc_block.values.ijk[axis_0] = 0.5*(x-(y*h_x2_div_d));
-            gc_block.values.ijk[axis_1] = 0.5*(y+(x*h_x2_div_d));
+            gc_block.values.ijk[axis_0] = (float)(0.5*(x-(y*h_x2_div_d)));
+            gc_block.values.ijk[axis_1] = (float)(0.5*(y+(x*h_x2_div_d)));
           
           } else { // Arc Center Format Offset Mode  
             if (!(ijk_words & (bit(axis_0)|bit(axis_1)))) { FAIL(STATUS_GCODE_NO_OFFSETS_IN_PLANE); } // [No offsets in plane]
@@ -785,20 +790,20 @@ uint8_t gc_execute_line(char *line)
             // Convert IJK values to proper units.
             if (gc_block.modal.units == UNITS_MODE_INCHES) {
               for (idx=0; idx<N_AXIS; idx++) { // Axes indices are consistent, so loop may be used to save flash space.
-                if (ijk_words & bit(idx)) { gc_block.values.ijk[idx] *= MM_PER_INCH; }
+                if (ijk_words & bit(idx)) { gc_block.values.ijk[idx] *= (float)MM_PER_INCH; }
               }
             }         
 
             // Arc radius from center to target
             x -= gc_block.values.ijk[axis_0]; // Delta x between circle center and target
             y -= gc_block.values.ijk[axis_1]; // Delta y between circle center and target
-            float target_r = hypot_f(x,y); 
+            target_r = hypot_f(x,y); 
 
             // Compute arc radius for mc_arc. Defined from current location to center.
             gc_block.values.r = hypot_f(gc_block.values.ijk[axis_0], gc_block.values.ijk[axis_1]); 
             
             // Compute difference between current location and target radii for final error-checks.
-            float delta_r = fabs(target_r-gc_block.values.r);
+            delta_r = (float)fabs(target_r-gc_block.values.r);
             if (delta_r > 0.005) { 
               if (delta_r > 0.5) { FAIL(STATUS_GCODE_INVALID_TARGET); } // [Arc definition error] > 0.5mm
               if (delta_r > (0.001*gc_block.values.r)) { FAIL(STATUS_GCODE_INVALID_TARGET); } // [Arc definition error] > 0.005mm AND 0.1% radius
@@ -956,11 +961,11 @@ uint8_t gc_execute_line(char *line)
           break;
         case MOTION_MODE_CW_ARC: 
           mc_arc(gc_state.position, gc_block.values.xyz, gc_block.values.ijk, gc_block.values.r, 
-            gc_state.feed_rate, gc_state.modal.feed_rate, axis_0, axis_1, axis_linear, true, gc_state.line_number);  
+              gc_state.feed_rate, gc_state.modal.feed_rate, axis_0, axis_1, axis_linear, true, gc_state.line_number);  
           break;        
         case MOTION_MODE_CCW_ARC:
           mc_arc(gc_state.position, gc_block.values.xyz, gc_block.values.ijk, gc_block.values.r, 
-            gc_state.feed_rate, gc_state.modal.feed_rate, axis_0, axis_1, axis_linear, false, gc_state.line_number);  
+              gc_state.feed_rate, gc_state.modal.feed_rate, axis_0, axis_1, axis_linear, false, gc_state.line_number);  
           break;
         case MOTION_MODE_PROBE_TOWARD: 
           // NOTE: gc_block.values.xyz is returned from mc_probe_cycle with the updated position value. So
@@ -989,6 +994,7 @@ uint8_t gc_execute_line(char *line)
   // refill and can only be resumed by the cycle start run-time command.
   gc_state.modal.program_flow = gc_block.modal.program_flow;
   if (gc_state.modal.program_flow) { 
+	protocol_buffer_synchronize(); // Sync and finish all remaining buffered motions before moving on.
     protocol_buffer_synchronize(); // Sync and finish all remaining buffered motions before moving on.
     if (gc_state.modal.program_flow == PROGRAM_FLOW_PAUSED) {
       if (sys.state != STATE_CHECK_MODE) {

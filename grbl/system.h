@@ -48,6 +48,7 @@
 #define EXEC_ALARM_PROBE_FAIL   bit(4) // bitmask 00010000
 #define EXEC_ALARM_HOMING_FAIL  bit(5) // bitmask 00100000
 
+
 // Define system state map. The state variable primarily tracks the individual functions
 // of Grbl to manage each without overlapping.
 #define STATE_IDLE          0      // Must be zero. No flags.
@@ -84,7 +85,6 @@
 #define CONTROL_PIN_INDEX_FEED_HOLD     bit(2)
 #define CONTROL_PIN_INDEX_CYCLE_START   bit(3)
 
-
 // Define global system variables
 typedef struct {
   uint8_t abort;                 // System abort flag. Forces exit back to main loop for reset.
@@ -92,7 +92,7 @@ typedef struct {
   uint8_t suspend;               // System suspend bitflag variable that manages holds, cancels, and safety door.
   uint8_t soft_limit;            // Tracks soft limit errors for the state machine (Boolean)
   uint8_t step_control;          // Regulates the step segment generator based on state.
-
+  
   int32_t position[N_AXIS];      // Real-time machine (aka home) position vector in steps. 
                                  // NOTE: This may need to be a volatile variable, if problems arise.                             
 
@@ -103,6 +103,7 @@ typedef struct {
 extern system_t sys;
 
 volatile uint8_t sys_probe_state;    // Probing state value.  Used to coordinate the probing cycle with stepper ISR.
+volatile uint8_t sys_probe_state;   // Probing state value.  Used to coordinate the probing cycle with stepper ISR.
 volatile uint8_t sys_rt_exec_state;  // Global realtime executor bitflag variable for state management. See EXEC bitmasks.
 volatile uint8_t sys_rt_exec_alarm;  // Global realtime executor bitflag variable for setting various alarms.
 
@@ -133,6 +134,5 @@ void system_set_exec_state_flag(uint8_t mask);
 void system_clear_exec_state_flag(uint8_t mask);
 void system_set_exec_alarm_flag(uint8_t mask);
 void system_clear_exec_alarm_flag(uint8_t mask);
-
 
 #endif

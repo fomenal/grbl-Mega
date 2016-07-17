@@ -34,11 +34,21 @@
 // NOTE: OEMs can avoid the need to maintain/update the defaults.h and cpu_map.h files and use only
 // one configuration file by placing their specific defaults and pin map at the bottom of this file.
 // If doing so, simply comment out these two defines and see instructions below.
-#define DEFAULTS_GENERIC
-#define CPU_MAP_2560_INITIAL
+//#define DEFAULTS_GENERIC
+//#define CPU_MAP_2560_INITIAL
+
+#define DEFAULT_CNC3020
 
 // Serial baud rate
 #define BAUD_RATE 115200
+
+#ifdef WIN32
+#define CPU_MAP_WIN32
+#endif
+
+#ifdef STM32F103C8
+#define CPU_MAP_STM32F103
+#endif
 
 // Define realtime command special characters. These characters are 'picked-off' directly from the
 // serial read data stream and are not passed to the grbl line execution parser. Select characters
@@ -122,9 +132,10 @@
 // through an automatically generated message. If disabled, users can still access the last probe
 // coordinates through Grbl '$#' print parameters.
 #define MESSAGE_PROBE_COORDINATES // Enabled by default. Comment to disable.
-
+ 
 // After the safety door switch has been toggled and restored, this setting sets the power-up delay
 // between restoring the spindle and coolant and resuming the cycle.
+
 #define SAFETY_DOOR_SPINDLE_DELAY 4.0 // Float (seconds)
 #define SAFETY_DOOR_COOLANT_DELAY 1.0 // Float (seconds)
 
@@ -136,6 +147,7 @@
 // described, if not, motions may move in strange directions. Grbl assumes the CoreXY A and B motors
 // have the same steps per mm internally.
 // #define COREXY // Default disabled. Uncomment to enable.
+
 
 // Inverts pin logic of the control command pins based on a mask. This essentially means you can use
 // normally-closed switches on the specified pins, rather than the default normally-open switches.
@@ -212,7 +224,7 @@
 // check in the settings module to prevent settings values that will exceed this limitation. The maximum
 // step rate is strictly limited by the CPU speed and will change if something other than an AVR running
 // at 16MHz is used.
-#define MAX_STEP_RATE_HZ 30000 // Hz
+//#define MAX_STEP_RATE_HZ 30000 // Hz
 
 // By default, Grbl sets all input pins to normal-high operation with their internal pull-up resistors
 // enabled. This simplifies the wiring for users by requiring only a switch connected to ground, 
@@ -341,7 +353,7 @@
 // NOTE: Be very careful when changing this value. Check EEPROM address locations to make sure
 // these string storage locations won't corrupt one another.
 // #define EEPROM_LINE_SIZE 80 // Uncomment to override defaults in settings.h
-  
+ 
 // Toggles XON/XOFF software flow control for serial communications. Not officially supported
 // due to problems involving the Atmega8U2 USB-to-serial chips on current Arduinos. The firmware
 // on these chips do not support XON/XOFF flow control characters and the intermediate buffer 
@@ -415,7 +427,6 @@
 // #define SLEEP_ENABLE  // Default disabled. Uncomment to enable.
 #define SLEEP_DURATION 5.0 // Float (0.25 - 61.0) seconds before sleep mode is executed.
 
-
 // ---------------------------------------------------------------------------------------
 // COMPILE-TIME ERROR CHECKING OF DEFINE VALUES:
 
@@ -441,5 +452,4 @@
 // Paste CPU_MAP definitions here.
 
 // Paste default settings definitions here.
-
 #endif

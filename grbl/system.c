@@ -20,9 +20,9 @@
 
 #include "grbl.h"
 
-
-void system_init()
+void system_init() 
 {
+#ifdef AVRTARGET
   CONTROL_DDR &= ~(CONTROL_MASK); // Configure as input pins
   #ifdef DISABLE_CONTROL_PIN_PULL_UP
     CONTROL_PORT &= ~(CONTROL_MASK); // Normal low operation. Requires external pull-down.
@@ -31,8 +31,39 @@ void system_init()
   #endif
   CONTROL_PCMSK |= CONTROL_MASK;  // Enable specific pins of the Pin Change Interrupt
   PCICR |= (1 << CONTROL_INT);   // Enable Pin Change Interrupt
-}
+#endif
+#ifdef STM32F103C8
+    GPIO_InitTypeDef GPIO_InitStructure;
+	RCC_APB2PeriphClockCmd(RCC_CONTROL | RCC_APB2Periph_AFIO, ENABLE);
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+#ifdef DISABLE_CONTROL_PIN_PULL_UP
+    GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IN_FLOATING;
+#else
+	GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IPU;
+#endif
+	GPIO_InitStructure.GPIO_Pin   = CONTROL_MASK;
+	GPIO_Init(CONTROL_PORT, &GPIO_InitStructure);
 
+    GPIO_EXTILineConfig(GPIO_CONTROLPORT, CONTROL_RESET_BIT);
+    GPIO_EXTILineConfig(GPIO_CONTROLPORT, CONTROL_FEED_HOLD_BIT);
+    GPIO_EXTILineConfig(GPIO_CONTROLPORT, CONTROL_CYCLE_START_BIT);
+    GPIO_EXTILineConfig(GPIO_CONTROLPORT, CONTROL_SAFETY_DOOR_BIT);
+
+    EXTI_InitTypeDef EXTI_InitStructure;
+    EXTI_InitStructure.EXTI_Line=  CONTROL_MASK;    //
+    EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt; //Interrupt mode, optional values for the interrupt EXTI_Mode_Interrupt and event EXTI_Mode_Event.
+    EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Falling; //Trigger mode, can be a falling edge trigger EXTI_Trigger_Falling, the rising edge triggered EXTI_Trigger_Rising, or any level (rising edge and falling edge trigger EXTI_Trigger_Rising_Falling)
+    EXTI_InitStructure.EXTI_LineCmd = ENABLE;
+    EXTI_Init(&EXTI_InitStructure);
+
+	NVIC_InitTypeDef NVIC_InitStructure;
+	NVIC_InitStructure.NVIC_IRQChannel = EXTI9_5_IRQn; //Enable keypad external interrupt channel
+	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0x02; //Priority 2,
+	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0x02; //Sub priority 2
+	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE; //Enable external interrupt channel
+	NVIC_Init(&NVIC_InitStructure);
+#endif
+}
 
 // Returns control pin state as a uint8 bitfield. Each bit indicates the input pin state, where 
 // triggered is 1 and not triggered is 0. Invert mask is applied. Bitfield organization is
@@ -40,7 +71,15 @@ void system_init()
 uint8_t system_control_get_state()
 {
   uint8_t control_state = 0;
+#ifdef AVRTARGET
   uint8_t pin = (CONTROL_PIN & CONTROL_MASK);
+#endif
+#ifdef WIN32
+  uint8_t pin = 0;
+#endif
+#ifdef STM32F103C8
+  uint16_t pin= GPIO_ReadInputData(CONTROL_PIN);
+#endif
   #ifdef INVERT_CONTROL_PIN_MASK
     pin ^= INVERT_CONTROL_PIN_MASK;
   #endif
@@ -58,6 +97,7 @@ uint8_t system_control_get_state()
 // only the realtime command execute variable to have the main program execute these when 
 // its ready. This works exactly like the character-based realtime commands when picked off
 // directly from the incoming serial data stream.
+#ifdef AVRTARGET
 ISR(CONTROL_INT_vect) 
 {
   uint8_t pin = system_control_get_state();
@@ -70,10 +110,33 @@ ISR(CONTROL_INT_vect)
       bit_true(sys_rt_exec_state, EXEC_FEED_HOLD); 
     } else if (bit_istrue(pin,CONTROL_PIN_INDEX_SAFETY_DOOR)) {
       bit_true(sys_rt_exec_state, EXEC_SAFETY_DOOR);
-    } 
+    }
   }
 }
-
+#endif
+#if defined (STM32F103C8)
+void EXTI9_5_IRQHandler(void)
+{
+  uint8_t pin = system_control_get_state();
+  if (pin) 
+  { 
+    if (bit_istrue(pin,CONTROL_PIN_INDEX_RESET)) 
+    {
+      mc_reset();
+    } else if (bit_istrue(pin,CONTROL_PIN_INDEX_CYCLE_START)) 
+    {
+      bit_true(sys_rt_exec_state, EXEC_CYCLE_START);
+    } else if (bit_istrue(pin,CONTROL_PIN_INDEX_FEED_HOLD)) 
+    {
+      bit_true(sys_rt_exec_state, EXEC_FEED_HOLD); 
+    } else if (bit_istrue(pin,CONTROL_PIN_INDEX_SAFETY_DOOR)) 
+    {
+      bit_true(sys_rt_exec_state, EXEC_SAFETY_DOOR);
+    }
+	NVIC_ClearPendingIRQ(EXTI9_5_IRQn);
+  }
+}
+#endif
 
 // Returns if safety door is ajar(T) or closed(F), based on pin state.
 uint8_t system_check_safety_door_ajar()
@@ -144,7 +207,6 @@ uint8_t system_execute_line(char *line)
             if (system_check_safety_door_ajar()) { return(STATUS_CHECK_DOOR); }
             report_feedback_message(MESSAGE_ALARM_UNLOCK);
             sys.state = STATE_IDLE;
-            // Don't run startup script. Prevents stored moves in startup from causing accidents.
           } // Otherwise, no effect.
           break;                   
     //  case 'J' : break;  // Jogging methods
@@ -174,6 +236,7 @@ uint8_t system_execute_line(char *line)
             // Block if safety door is ajar.
             if (system_check_safety_door_ajar()) { return(STATUS_CHECK_DOOR); }
             sys.state = STATE_HOMING; // Set system state variable
+            
             mc_homing_cycle(); 
             if (!sys.abort) {  // Execute startup scripts after successful homing.
               sys.state = STATE_IDLE; // Set to IDLE when complete.
@@ -273,7 +336,6 @@ float system_convert_axis_steps_to_mpos(int32_t *steps, uint8_t idx)
   return(pos);
 }
 
-
 void system_convert_array_steps_to_mpos(float *position, int32_t *steps)
 {
   uint8_t idx;
@@ -282,33 +344,82 @@ void system_convert_array_steps_to_mpos(float *position, int32_t *steps)
   }
   return;
 }
-
-
+#ifdef WIN32
+extern CRITICAL_SECTION CriticalSection; 
+#endif
 // Special handlers for setting and clearing Grbl's real-time execution flags.
 void system_set_exec_state_flag(uint8_t mask) {
+#ifdef AVRTARGET
   uint8_t sreg = SREG; 
   cli(); 
   sys_rt_exec_state |= (mask);
   SREG = sreg;
+#endif
+#ifdef WIN32
+    EnterCriticalSection(&CriticalSection);
+    sys_rt_exec_state |= (mask);
+    LeaveCriticalSection(&CriticalSection);
+#endif
+#ifdef STM32F103C8
+    __disable_irq();
+    sys_rt_exec_state |= (mask);
+    __enable_irq();
+#endif
 }
 
 void system_clear_exec_state_flag(uint8_t mask) {
+#ifdef AVRTARGET
   uint8_t sreg = SREG; 
   cli(); 
   sys_rt_exec_state &= ~(mask);
   SREG = sreg;
+#endif
+#ifdef WIN32
+    EnterCriticalSection(&CriticalSection);
+    sys_rt_exec_state &= ~(mask);
+    LeaveCriticalSection(&CriticalSection);
+#endif
+#ifdef STM32F103C8
+    __disable_irq();
+    sys_rt_exec_state &= ~(mask);
+    __enable_irq();
+#endif
 }
 
 void system_set_exec_alarm_flag(uint8_t mask) {
+#ifdef AVRTARGET
   uint8_t sreg = SREG; 
   cli(); 
   sys_rt_exec_alarm |= (mask);
   SREG = sreg;
+#endif
+#ifdef WIN32
+    EnterCriticalSection(&CriticalSection);
+    sys_rt_exec_alarm |= (mask);
+    LeaveCriticalSection(&CriticalSection);
+#endif
+#ifdef STM32F103C8
+    __disable_irq();
+    sys_rt_exec_alarm |= (mask);
+    __enable_irq();
+#endif
 }
 
 void system_clear_exec_alarm_flag(uint8_t mask) {
+#ifdef AVRTARGET
   uint8_t sreg = SREG; 
   cli(); 
   sys_rt_exec_alarm &= ~(mask);
   SREG = sreg;
+#endif
+#ifdef WIN32
+    EnterCriticalSection(&CriticalSection);
+    sys_rt_exec_alarm &= ~(mask);
+    LeaveCriticalSection(&CriticalSection);
+#endif
+#ifdef STM32F103C8
+    __disable_irq();
+    sys_rt_exec_alarm &= ~(mask);
+    __enable_irq();
+#endif
 }

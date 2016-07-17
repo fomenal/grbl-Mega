@@ -69,13 +69,15 @@ void report_status_message(uint8_t status_code)
         printPgmString(PSTR("Homing not enabled")); break;
         case STATUS_OVERFLOW:
         printPgmString(PSTR("Line overflow")); break;
-        case STATUS_MAX_STEP_RATE_EXCEEDED: 
-        printPgmString(PSTR("Step rate > 30kHz")); break;
+        #ifdef MAX_STEP_RATE_HZ
+          case STATUS_MAX_STEP_RATE_EXCEEDED: 
+          printPgmString(PSTR("Step rate > 30kHz")); break;
+        #endif      
         case STATUS_CHECK_DOOR:
         printPgmString(PSTR("Check Door")); break;
         case STATUS_LINE_LENGTH_EXCEEDED:
         printPgmString(PSTR("Line length exceeded")); break;
-        // Common g-code parser errors.
+        // Common g-code parser errors.        // Common g-code parser errors.
         case STATUS_GCODE_MODAL_GROUP_VIOLATION:
         printPgmString(PSTR("Modal group violation")); break;
         case STATUS_GCODE_UNSUPPORTED_COMMAND:
@@ -225,7 +227,7 @@ void report_grbl_settings() {
     printPgmString(PSTR(" (homing dir invert mask:")); print_uint8_base2(settings.homing_dir_mask);  
     printPgmString(PSTR(")\r\n$24=")); printFloat_SettingValue(settings.homing_feed_rate);
     printPgmString(PSTR(" (homing feed, mm/min)\r\n$25=")); printFloat_SettingValue(settings.homing_seek_rate);
-    printPgmString(PSTR(" (homing seek, mm/min)\r\n$26=")); print_uint8_base10(settings.homing_debounce_delay);
+    printPgmString(PSTR(" (homing seek, mm/min)\r\n$26=")); print_uint32_base10(settings.homing_debounce_delay);
     printPgmString(PSTR(" (homing debounce, msec)\r\n$27=")); printFloat_SettingValue(settings.homing_pulloff);
     printPgmString(PSTR(" (homing pull-off, mm)\r\n$30=")); printFloat_RPMValue(settings.rpm_max);
     printPgmString(PSTR(" (rpm max)\r\n$31=")); printFloat_RPMValue(settings.rpm_min);
@@ -233,6 +235,7 @@ void report_grbl_settings() {
   #endif
   
   // Print axis settings
+    {
   uint8_t idx, set_idx;
   uint8_t val = AXIS_SETTINGS_START_VAL;
   for (set_idx=0; set_idx<AXIS_N_SETTINGS; set_idx++) {
@@ -266,6 +269,7 @@ void report_grbl_settings() {
     }
     val += AXIS_SETTINGS_INCREMENT;
   }  
+    }
 }
 
 
@@ -385,7 +389,7 @@ void report_gcode_modes()
   printFloat_RateValue(gc_state.feed_rate);
   
   printPgmString(PSTR(" S"));
-  printFloat_RPMValue(gc_state.spindle_speed);
+  printFloat_RateValue(gc_state.spindle_speed);
 
   printPgmString(PSTR("]\r\n"));
 }
@@ -426,8 +430,12 @@ void report_realtime_status()
 {
   uint8_t idx;
   int32_t current_position[N_AXIS]; // Copy current state of the system position variable
-  memcpy(current_position,sys.position,sizeof(sys.position));
   float print_position[N_AXIS];
+#ifdef REPORT_REALTIME_LINE_NUMBERS  
+  int32_t ln;
+  plan_block_t * pb;
+#endif
+  memcpy(current_position,sys.position,sizeof(sys.position));
 
   #ifdef USE_CLASSIC_REALTIME_REPORT
     // -----------------------------------
@@ -495,8 +503,8 @@ void report_realtime_status()
     #ifdef REPORT_REALTIME_LINE_NUMBERS  
       // Report current line number
       printPgmString(PSTR(",Ln:")); 
-      int32_t ln=0;
-      plan_block_t * pb = plan_get_current_block();
+      ln=0;
+      pb = plan_get_current_block();
       if(pb != NULL) {
         ln = pb->line_number;
       } 
@@ -655,8 +663,3 @@ void report_realtime_status()
   
   printPgmString(PSTR(">\r\n"));
 }
-
-
-
-
-

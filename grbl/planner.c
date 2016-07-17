@@ -121,13 +121,15 @@ static uint8_t plan_prev_block_index(uint8_t block_index)
   motion(s) distance per block to a desired tolerance. The more combined distance the planner has to use,
   the faster it can go. (3) Maximize the planner buffer size. This also will increase the combined distance
   for the planner to compute over. It also increases the number of computations the planner has to perform
-  to compute an optimal plan, so select carefully. 
-  
+  to compute an optimal plan, so select carefully.
 */
 static void planner_recalculate() 
 {   
   // Initialize block index to the last block in the planner buffer.
   uint8_t block_index = plan_prev_block_index(block_buffer_head);
+  float entry_speed_sqr;
+  plan_block_t *next;
+  plan_block_t *current = &block_buffer[block_index];
         
   // Bail. Can't do anything with one only one plan-able block.
   if (block_index == block_buffer_planned) { return; }
@@ -135,9 +137,6 @@ static void planner_recalculate()
   // Reverse Pass: Coarsely maximize all possible deceleration curves back-planning from the last
   // block in buffer. Cease planning when the last optimal planned or tail pointer is reached.
   // NOTE: Forward pass will later refine and correct the reverse pass to create an optimal plan.
-  float entry_speed_sqr;
-  plan_block_t *next;
-  plan_block_t *current = &block_buffer[block_index];
 
   // Calculate maximum entry speed for last block in buffer, where the exit speed is always zero.
   current->entry_speed_sqr = min( current->max_entry_speed_sqr, 2*current->acceleration*current->millimeters);
@@ -217,12 +216,10 @@ void plan_discard_current_block()
   }
 }
 
-
 plan_block_t *plan_get_parking_block()
 {
   return(&block_buffer[block_buffer_head]);
 }
-
 
 plan_block_t *plan_get_current_block() 
 {
@@ -235,7 +232,7 @@ float plan_get_exec_block_exit_speed()
 {
   uint8_t block_index = plan_next_block_index(block_buffer_tail);
   if (block_index == block_buffer_head) { return( 0.0 ); }
-  return( sqrt( block_buffer[block_index].entry_speed_sqr ) ); 
+  return( (float)sqrt( block_buffer[block_index].entry_speed_sqr ) ); 
 }
 
 
@@ -263,23 +260,28 @@ uint8_t plan_check_full_buffer()
    to execute the parking motion. */
 uint8_t plan_buffer_line(float *target, float feed_rate, uint8_t invert_feed_rate, uint8_t is_parking_motion, int32_t line_number) 
 {
-  // Prepare and initialize new block
-  plan_block_t *block = &block_buffer[block_buffer_head];
-  block->step_event_count = 0;
-  block->millimeters = 0;
-  block->direction_bits = 0;
-  block->acceleration = SOME_LARGE_VALUE; // Scaled down to maximum acceleration later
-  block->line_number = line_number;
-
-  // Compute and store initial move distance data.
   int32_t target_steps[N_AXIS], position_steps[N_AXIS];
   float unit_vec[N_AXIS], delta_mm;
   uint8_t idx;
+
+  // Prepare and initialize new block
+  plan_block_t *block = &block_buffer[block_buffer_head];
+  float inverse_millimeters;
+  float junction_vec[N_AXIS];
+  float junction_cos_theta = 0.0;
+  float magnitude_junction_vec = 0.0;
+
+  block->step_event_count = 0;
+  block->millimeters = 0;
+  block->direction_bits = 0;
+  block->acceleration = (float)SOME_LARGE_VALUE; // Scaled down to maximum acceleration later
+  block->line_number = line_number;
+
   
   // Copy position data based on type of motion being planned.
   if (is_parking_motion) { memcpy(position_steps, sys.position, sizeof(sys.position)); }
   else { memcpy(position_steps, pl.position, sizeof(pl.position)); }
-  
+
   #ifdef COREXY
     target_steps[A_MOTOR] = lround(target[A_MOTOR]*settings.steps_per_mm[A_MOTOR]);
     target_steps[B_MOTOR] = lround(target[B_MOTOR]*settings.steps_per_mm[B_MOTOR]);
@@ -309,7 +311,7 @@ uint8_t plan_buffer_line(float *target, float feed_rate, uint8_t invert_feed_rat
       block->steps[idx] = labs(target_steps[idx]-position_steps[idx]);
       block->step_event_count = max(block->step_event_count, block->steps[idx]);
       delta_mm = (target_steps[idx] - position_steps[idx])/settings.steps_per_mm[idx];
-	  #endif
+    #endif
     unit_vec[idx] = delta_mm; // Store unit vector numerator. Denominator computed later.
         
     // Set direction bits. Bit enabled always means direction is negative.
@@ -318,24 +320,21 @@ uint8_t plan_buffer_line(float *target, float feed_rate, uint8_t invert_feed_rat
     // Incrementally compute total move distance by Euclidean norm. First add square of each term.
     block->millimeters += delta_mm*delta_mm;
   }
-  block->millimeters = sqrt(block->millimeters); // Complete millimeters calculation with sqrt()
+  block->millimeters = (float)sqrt(block->millimeters); // Complete millimeters calculation with sqrt()
   
   // Bail if this is a zero-length block. Highly unlikely to occur.
   if (block->step_event_count == 0) { return(PLAN_EMPTY_BLOCK); } 
   
   // Adjust feed_rate value to mm/min depending on type of rate input (normal, inverse time, or rapids)
-  if (feed_rate < 0) { feed_rate = SOME_LARGE_VALUE; } // Scaled down to absolute max/rapids rate later
+  if (feed_rate < 0) { feed_rate = (float)SOME_LARGE_VALUE; } // Scaled down to absolute max/rapids rate later
   else if (invert_feed_rate) { feed_rate *= block->millimeters; }
   if (feed_rate < MINIMUM_FEED_RATE) { feed_rate = MINIMUM_FEED_RATE; } // Prevents step generation round-off condition.
 
+  inverse_millimeters = (float)(1.0/block->millimeters);  // Inverse millimeters to remove multiple float divides	
   // Calculate the unit vector of the line move and the block maximum feed rate and acceleration scaled 
   // down such that no individual axes maximum values are exceeded with respect to the line direction. 
   // NOTE: This calculation assumes all axes are orthogonal (Cartesian) and works with ABC-axes,
   // if they are also orthogonal/independent. Operates on the absolute value of the unit vector.
-  float junction_vec[N_AXIS];
-  float inverse_millimeters = 1.0/block->millimeters;  // Inverse millimeters to remove multiple float divides	
-  float junction_cos_theta = 0.0;
-  float magnitude_junction_vec = 0.0;
   for (idx=0; idx<N_AXIS; idx++) {
     if (unit_vec[idx] != 0) {  // Avoid divide by zero.
       unit_vec[idx] *= inverse_millimeters;  // Complete unit vector calculation
@@ -343,7 +342,6 @@ uint8_t plan_buffer_line(float *target, float feed_rate, uint8_t invert_feed_rat
       // Check and limit feed rate against max individual axis velocities and accelerations
       block->acceleration = min(block->acceleration,fabs(settings.acceleration[idx]/unit_vec[idx]));
       feed_rate = min(feed_rate,fabs(settings.max_rate[idx]/unit_vec[idx]));
-      
       // Incrementally compute cosine of angle between previous and current path. Cos(theta) of the junction
       // between the current move and the previous move is simply the dot product of the two unit vectors, 
       // where prev_unit_vec is negative. Used later to compute maximum junction speed.
@@ -353,15 +351,12 @@ uint8_t plan_buffer_line(float *target, float feed_rate, uint8_t invert_feed_rat
     junction_vec[idx] = unit_vec[idx]-pl.previous_unit_vec[idx];
     magnitude_junction_vec += junction_vec[idx]*junction_vec[idx];
   }
-
   // TODO: Need to check this method handling zero junction speeds when starting from rest.
   if ((block_buffer_head == block_buffer_tail) || is_parking_motion) {
-
     // Initialize block entry speed as zero. Assume it will be starting from rest. Planner will correct this later.
     // If parking motion, the parking block always is assumed to start from rest and end at a complete stop.
     block->entry_speed_sqr = 0.0;
     block->max_junction_speed_sqr = 0.0; // Starting from rest. Enforce start from zero velocity.
-
   } else {
     /* 
        Compute maximum allowable entry speed at junction by centripetal acceleration approximation.
@@ -380,13 +375,11 @@ uint8_t plan_buffer_line(float *target, float feed_rate, uint8_t invert_feed_rat
        is exactly the same. Instead of motioning all the way to junction point, the machine will
        just follow the arc circle defined here. The Arduino doesn't have the CPU cycles to perform
        a continuous mode path, but ARM-based microcontrollers most certainly do. 
-   
        NOTE: The max junction speed is a fixed value, since machine acceleration limits cannot be
        changed dynamically during operation nor can the line move geometry. This must be kept in
        memory in the event of a feedrate override changing the nominal speeds of blocks, which can 
        change the overall maximum entry speed conditions of all blocks.
     */
-    
     // NOTE: Computed without any expensive trig, sin() or acos(), by trig half angle identity of cos(theta).
     if (junction_cos_theta > 0.999999) {
       //  For a 0 degree acute junction, just set minimum junction speed. 
@@ -397,6 +390,7 @@ uint8_t plan_buffer_line(float *target, float feed_rate, uint8_t invert_feed_rat
         block->max_junction_speed_sqr = SOME_LARGE_VALUE;
       } else {
         float junction_acceleration = SOME_LARGE_VALUE;
+        float sin_theta_d2;
         magnitude_junction_vec = sqrt(magnitude_junction_vec); // Complete magnitude calculation.
         for (idx=0; idx<N_AXIS; idx++) {
           if (junction_vec[idx] != 0) {  // Avoid divide by zero.
@@ -404,13 +398,12 @@ uint8_t plan_buffer_line(float *target, float feed_rate, uint8_t invert_feed_rat
                   fabs((settings.acceleration[idx]*magnitude_junction_vec)/junction_vec[idx]) );
           }
         }
-        float sin_theta_d2 = sqrt(0.5*(1.0-junction_cos_theta)); // Trig half angle identity. Always positive.
+        sin_theta_d2 = sqrt(0.5*(1.0-junction_cos_theta)); // Trig half angle identity. Always positive.
         block->max_junction_speed_sqr = max( MINIMUM_JUNCTION_SPEED*MINIMUM_JUNCTION_SPEED,
                        (junction_acceleration * settings.junction_deviation * sin_theta_d2)/(1.0-sin_theta_d2) );
       }
     }
   }
-  
   // Store block nominal speed
   block->nominal_speed_sqr = feed_rate*feed_rate; // (mm/min). Always > 0
   

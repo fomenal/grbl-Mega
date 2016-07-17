@@ -24,10 +24,14 @@
 
 
 #ifndef RX_BUFFER_SIZE
-  #define RX_BUFFER_SIZE 256
+  #define RX_BUFFER_SIZE 128
 #endif
 #ifndef TX_BUFFER_SIZE
-  #define TX_BUFFER_SIZE 128
+#if defined (STM32F103C8)
+  #define TX_BUFFER_SIZE 256
+#else
+  #define TX_BUFFER_SIZE 64
+#endif
 #endif
 
 #define SERIAL_NO_DATA 0xff
@@ -43,11 +47,13 @@
   #define XON_CHAR 0x11
 #endif
 
+#ifdef WIN32
+void winserial_init(char *pPort);
+#endif
 void serial_init();
 
 // Writes one byte to the TX serial buffer. Called by main program.
 void serial_write(uint8_t data);
-
 // Fetches the first byte in the serial read buffer. Called by main program.
 uint8_t serial_read();
 

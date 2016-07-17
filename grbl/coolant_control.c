@@ -2,7 +2,7 @@
   coolant_control.c - coolant control methods
   Part of Grbl
 
-  Copyright (c) 2012-2016 Sungeun K. Jeon
+  Copyright (c) 2012-2015 Sungeun K. Jeon
 
   Grbl is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -23,14 +23,31 @@
 
 void coolant_init()
 {
-  COOLANT_FLOOD_DDR |= (1 << COOLANT_FLOOD_BIT); // Configure as output pin.
-  COOLANT_MIST_DDR |= (1 << COOLANT_MIST_BIT); // Configure as output pin.
+#ifdef AVRTARGET
+  COOLANT_FLOOD_DDR |= (1 << COOLANT_FLOOD_BIT);
+  COOLANT_MIST_DDR |= (1 << COOLANT_MIST_BIT);
+#endif
+#ifdef STM32F103C8
+    GPIO_InitTypeDef GPIO_InitStructure;
+	RCC_APB2PeriphClockCmd(RCC_COOLANT_FLOOD_PORT, ENABLE);
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_Out_PP;
+	GPIO_InitStructure.GPIO_Pin   = 1 << COOLANT_FLOOD_BIT;
+	GPIO_Init(COOLANT_FLOOD_PORT, &GPIO_InitStructure);
+
+   	RCC_APB2PeriphClockCmd(RCC_COOLANT_MIST_PORT, ENABLE);
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_Out_PP;
+	GPIO_InitStructure.GPIO_Pin   = 1 << COOLANT_MIST_BIT;
+	GPIO_Init(COOLANT_FLOOD_PORT, &GPIO_InitStructure);
+#endif
   coolant_stop();
 }
 
 
 uint8_t coolant_is_enabled()
 {
+#ifdef AVRTARGET
   #ifdef INVERT_COOLANT_FLOOD_PIN
     if (!(COOLANT_FLOOD_PORT & (1<<COOLANT_FLOOD_BIT))) { return(true); }
   #else
@@ -41,41 +58,79 @@ uint8_t coolant_is_enabled()
   #else
     if (COOLANT_MIST_PORT & (1<<COOLANT_MIST_BIT)) { return(true); }
   #endif
+#endif
+#ifdef STM32F103C8
+  #ifdef INVERT_COOLANT_FLOOD_PIN
+    if (!(GPIO_ReadOutputData(COOLANT_FLOOD_PORT) & (1<<COOLANT_FLOOD_BIT))) { return(true); }
+  #else
+    if (GPIO_ReadOutputData(COOLANT_FLOOD_PORT) & (1<<COOLANT_FLOOD_BIT)) { return(true); }
+  #endif
+  #ifdef INVERT_COOLANT_MIST_PIN
+    if (!(GPIO_ReadOutputData(COOLANT_MIST_PORT) & (1<<COOLANT_MIST_BIT))) { return(true); }
+  #else
+    if (GPIO_ReadOutputData(COOLANT_MIST_PORT) & (1<<COOLANT_MIST_BIT)) { return(true); }
+  #endif
+#endif
   return(false); 
 }
 
 
 void coolant_stop()
 {
-  #ifdef INVERT_COOLANT_FLOOD_PIN
+#ifdef AVRTARGET
+#ifdef INVERT_COOLANT_FLOOD_PIN
     COOLANT_FLOOD_PORT |= (1 << COOLANT_FLOOD_BIT);
-  #else
+#else
     COOLANT_FLOOD_PORT &= ~(1 << COOLANT_FLOOD_BIT);
-  #endif
-  #ifdef INVERT_COOLANT_MIST_PIN
-    COOLANT_MIST_PORT |= (1 << COOLANT_MIST_BIT);
-  #else
-    COOLANT_MIST_PORT &= ~(1 << COOLANT_MIST_BIT);
-  #endif
+#endif
+  COOLANT_MIST_PORT &= ~(1 << COOLANT_MIST_BIT);
+#endif
+#ifdef STM32F103C8
+#ifdef INVERT_COOLANT_FLOOD_PIN
+  GPIO_SetBits(COOLANT_FLOOD_PORT,1 << COOLANT_FLOOD_BIT);
+#else
+  GPIO_ResetBits(COOLANT_FLOOD_PORT,1 << COOLANT_FLOOD_BIT);
+#endif
+  GPIO_ResetBits(COOLANT_MIST_PORT,1 << COOLANT_MIST_BIT);
+#endif
 }
 
 
 void coolant_set_state(uint8_t mode)
 {
-  if (sys.abort) { return; } // Block during abort.
-  
+  if (sys.abort) { return; } // Block during abort
+
   if (mode == COOLANT_FLOOD_ENABLE) {
+#ifdef AVRTARGET
     #ifdef INVERT_COOLANT_FLOOD_PIN
       COOLANT_FLOOD_PORT &= ~(1 << COOLANT_FLOOD_BIT);
     #else
       COOLANT_FLOOD_PORT |= (1 << COOLANT_FLOOD_BIT);
     #endif
-  } else if (mode == COOLANT_MIST_ENABLE) {
+#endif
+#ifdef STM32F103C8
+  #ifdef INVERT_COOLANT_FLOOD_PIN
+    GPIO_ResetBits(COOLANT_FLOOD_PORT,1 << COOLANT_FLOOD_BIT);
+  #else
+    GPIO_SetBits(COOLANT_FLOOD_PORT,1 << COOLANT_FLOOD_BIT);
+  #endif
+#endif
+
+    } else if (mode == COOLANT_MIST_ENABLE) {
+#ifdef AVRTARGET
     #ifdef INVERT_COOLANT_MIST_PIN
       COOLANT_MIST_PORT &= ~(1 << COOLANT_MIST_BIT);
     #else
       COOLANT_MIST_PORT |= (1 << COOLANT_MIST_BIT);
     #endif
+#endif
+#ifdef STM32F103C8
+    #ifdef INVERT_COOLANT_MIST_PIN
+      GPIO_ResetBits(COOLANT_MIST_PORT,~(1 << COOLANT_MIST_BIT));
+    #else
+      GPIO_SetBits(COOLANT_MIST_PORT,(1 << COOLANT_MIST_BIT));
+    #endif
+#endif
   } else {
     coolant_stop();
   }
